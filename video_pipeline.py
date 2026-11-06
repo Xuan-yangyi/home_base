@@ -341,3 +341,64 @@ class Qwen35Engine(InferenceEngine):
 
         text = "\n".join(text_lines).strip()
         return (text, ftl, tps, vision_time)
+
+
+# ---------------------------------------------------------------------------
+# Reporters — Console and JSONL file output
+# ---------------------------------------------------------------------------
+
+class ConsoleReporter(Reporter):
+    """Prints results to terminal with timestamps and metrics."""
+
+    def start(self) -> None:
+        print("[INFO] ConsoleReporter started.")
+
+    def report(self, result: InferenceResult) -> None:
+        ts = time.strftime("%H:%M:%S", time.localtime(result.timestamp))
+        line = (
+            f"[{ts}] {result.text}"
+            f"  │ FTL:{result.ftl:.1f}s TPS:{result.tps:.1f}"
+        )
+        if result.vision_time > 0:
+            line += f" Vision:{result.vision_time:.2f}s"
+        print(line)
+
+    def stop(self) -> None:
+        print("[INFO] ConsoleReporter stopped.")
+
+
+class FileReporter(Reporter):
+    """Writes results as JSONL to a file."""
+
+    def __init__(self, output_path: str):
+        self._path = output_path
+        self._file = None
+        self._count = 0
+
+    def start(self) -> None:
+        self._count = 0
+        self._file = open(self._path, "w")
+        print(f"[INFO] FileReporter writing to: {self._path}")
+
+    def report(self, result: InferenceResult) -> None:
+        if self._file is None:
+            return
+        self._count += 1
+        record = {
+            "id": self._count,
+            "ts": result.timestamp,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(result.timestamp)),
+            "text": result.text,
+            "ftl": result.ftl,
+            "tps": result.tps,
+            "vision_time": result.vision_time,
+        }
+        self._file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._file.flush()
+
+    def stop(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            print(f"[INFO] FileReporter stopped. Wrote {self._count} records.")
