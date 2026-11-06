@@ -226,6 +226,7 @@ class Qwen35Engine(InferenceEngine):
             devid=dev_id,
             video_ratio=0.25,
             log_level="INFO",
+            do_sample=False,
         )
 
         self._model = qwen3_5.Qwen3_5(_args)
