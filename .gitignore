@@ -1,0 +1,12 @@
+.superpowers/
+*.bmodel
+*.mp4
+*.png
+*.jpg
+*.zip
+__pycache__/
+*.pyc
+.repo/
+build/
+*.so
+*.whl
