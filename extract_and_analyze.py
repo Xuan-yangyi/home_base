@@ -54,10 +54,9 @@ def extract_frames(video_path: str, output_dir: str,
     if not os.path.isfile(ffprobe_bin):
         ffprobe_bin = 'ffprobe'
 
-    # Probe video info with ffprobe (software decode: override sophon hw default)
+    # Probe video info with ffprobe
     probe_cmd = [
         ffprobe_bin, '-v', 'error',
-        '-c:v', 'h264',       # force software decode, not h264_bm
         '-select_streams', 'v:0',
         '-show_entries', 'stream=nb_frames,r_frame_rate',
         '-of', 'csv=p=0',
@@ -85,17 +84,15 @@ def extract_frames(video_path: str, output_dir: str,
     print(f"[Extract] Estimated output: ~{estimated} frames")
     print(f"[Extract] Output dir: {output_dir}")
 
-    # ffmpeg: software h264 decode (explicit -c:v h264 to skip h264_bm hw),
-    # select every Nth frame, resize, output PNG.
-    # -vsync 0: no frame duplication/drop; select filter governs output
+    # ffmpeg: select every Nth frame, resize, output PNG.
+    # -fps_mode passthrough: no frame duplication/drop; select filter governs output
     # -start_number 0: output numbering starts at 0
     filter_str = f"select='not(mod(n,{extract_ratio}))',scale={resize_to}:{resize_to}"
     ffmpeg_cmd = [
         ffmpeg_bin,
-        '-c:v', 'h264',        # force software decode; skip h264_bm (VPSS)
         '-i', video_path,
         '-vf', filter_str,
-        '-vsync', '0',
+        '-fps_mode', 'passthrough',
         '-start_number', '0',
         '-v', 'warning',
         '-stats',
