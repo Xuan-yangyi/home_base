@@ -117,3 +117,79 @@ class Reporter(ABC):
     def stop(self) -> None:
         """Clean up reporter resources."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# CV2-based FrameSource (RTSP + MP4 via hardware-accelerated OpenCV)
+# ---------------------------------------------------------------------------
+
+class CV2VideoSource(FrameSource):
+    """Video frame source backed by sophon-opencv cv2.VideoCapture.
+
+    Supports:
+      - RTSP streams   (rtsp://...)
+      - MP4/AVI files  (/path/to/file.mp4)
+      - Other formats  (anything cv2.VideoCapture can open)
+    """
+
+    def __init__(self):
+        self._cap = None
+        self._source = ""
+        self._fps: float = 30.0
+        self._frame_count: int = 0
+        self._is_live: bool = False
+
+    def open(self, source: str) -> bool:
+        self._source = source
+        self._is_live = source.startswith("rtsp://") or source.startswith("rtmp://")
+
+        import cv2
+        if self._is_live:
+            self._cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        else:
+            self._cap = cv2.VideoCapture(source)
+
+        if not self._cap.isOpened():
+            print(f"[ERROR] Cannot open video source: {source}")
+            return False
+
+        self._fps = self._cap.get(cv2.CAP_PROP_FPS)
+        if self._fps <= 0:
+            self._fps = 30.0
+        self._frame_count = 0
+        print(f"[INFO] Video source opened: fps={self._fps:.1f}, "
+              f"live={self._is_live}, source={source}")
+        return True
+
+    def read(self) -> Optional[Frame]:
+        import cv2
+        if self._cap is None:
+            return None
+
+        ret, bgr = self._cap.read()
+        if not ret or bgr is None:
+            if not self._is_live:
+                return None
+            return None
+
+        self._frame_count += 1
+        return Frame(
+            data=bgr,
+            timestamp=time.time(),
+            frame_id=self._frame_count,
+        )
+
+    def close(self) -> None:
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+            print("[INFO] Video source closed.")
+
+    @property
+    def fps(self) -> float:
+        return self._fps
+
+    @property
+    def is_live(self) -> bool:
+        return self._is_live
