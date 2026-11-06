@@ -193,3 +193,151 @@ class CV2VideoSource(FrameSource):
     @property
     def is_live(self) -> bool:
         return self._is_live
+
+
+# ---------------------------------------------------------------------------
+# Qwen3.5 Inference Engine (wraps existing qwen3_5.py unchanged)
+# ---------------------------------------------------------------------------
+
+class Qwen35Engine(InferenceEngine):
+    """Inference engine wrapping the existing Qwen3_5 class from qwen3_5.py.
+
+    The existing qwen3_5.Qwen3_5.run_round() prints to stdout; we capture
+    the printed output via io.StringIO redirection and parse it back.
+    """
+
+    def __init__(self):
+        self._model = None
+        self._temp_dir = None
+        self._frame_count = 0
+
+    def load(self, model_path: str, config_path: str, dev_id: int) -> None:
+        """Import qwen3_5 and instantiate Qwen3_5 with minimal args."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+
+        import qwen3_5
+
+        class _Args:
+            model_path = model_path
+            config_path = config_path
+            devid = dev_id
+            video_ratio = 0.25
+            log_level = "INFO"
+
+        self._model = qwen3_5.Qwen3_5(_Args())
+        self._temp_dir = tempfile.mkdtemp(prefix="qwen35_frame_")
+        print(f"[INFO] Qwen3.5 engine loaded. Temp dir: {self._temp_dir}")
+
+    def warmup(self) -> None:
+        """Run a tiny warmup inference to prime the model."""
+        if self._model is None:
+            return
+        print("[INFO] Warming up model...")
+        dummy = np.zeros((64, 64, 3), dtype=np.uint8) + 128
+        warmup_path = os.path.join(self._temp_dir, "_warmup.png")
+        import cv2
+        cv2.imwrite(warmup_path, dummy)
+        try:
+            self._analyze_impl(warmup_path, "warmup")
+        except Exception:
+            pass
+        finally:
+            if os.path.exists(warmup_path):
+                os.remove(warmup_path)
+        print("[INFO] Warmup complete.")
+
+    def analyze(self, frame: Frame, prompt: str) -> InferenceResult:
+        """Save frame to temp PNG, run inference, return result."""
+        self._frame_count += 1
+        img_path = os.path.join(
+            self._temp_dir,
+            f"frame_{self._frame_count:05d}.png"
+        )
+
+        import cv2
+        cv2.imwrite(img_path, frame.data)
+
+        try:
+            text, ftl, tps, vision_time = self._analyze_impl(img_path, prompt)
+        finally:
+            try:
+                os.remove(img_path)
+            except OSError:
+                pass
+
+        return InferenceResult(
+            text=text,
+            timestamp=frame.timestamp,
+            ftl=ftl,
+            tps=tps,
+            vision_time=vision_time,
+        )
+
+    def _analyze_impl(self, img_path: str, prompt: str):
+        """Core: set up messages, call run_round, capture stdout, parse output."""
+        model = self._model
+        model.input_str = prompt
+        messages = model.image_message(img_path)
+
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            model.run_round(messages, media_type="image")
+        finally:
+            sys.stdout = old_stdout
+
+        model.clear_history()
+        model.history_max_posid = 0
+
+        output = buf.getvalue()
+        return self._parse_output(output)
+
+    def _parse_output(self, output: str):
+        """Parse the printed output from run_round() to extract text and metrics.
+
+        run_round() prints:
+            \\nAnswer:\\n
+            <token-by-token text>
+            \\nFTL: X.XXX s
+            \\nTPS: Y.YYY token/s
+            [\\nTotal Tokens: N]
+            [\\nVision([...]): Z.ZZZ s]
+
+        Returns: (text: str, ftl: float, tps: float, vision_time: float)
+        """
+        answer_marker = "\nAnswer:\n"
+        idx = output.find(answer_marker)
+        if idx == -1:
+            return ("", 0.0, 0.0, 0.0)
+
+        after_answer = output[idx + len(answer_marker):]
+        lines = after_answer.split("\n")
+
+        ftl = 0.0
+        tps = 0.0
+        vision_time = 0.0
+        text_lines = []
+
+        for line in lines:
+            if line.startswith("FTL:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    ftl = float(parts[1])
+            elif line.startswith("TPS:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    tps = float(parts[1])
+            elif line.startswith("Vision("):
+                parts = line.split("): ")
+                if len(parts) >= 2:
+                    vision_time = float(parts[1].split()[0])
+            elif line.startswith("Total Tokens:"):
+                continue
+            else:
+                text_lines.append(line)
+
+        text = "\n".join(text_lines).strip()
+        return (text, ftl, tps, vision_time)
