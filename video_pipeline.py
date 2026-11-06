@@ -402,3 +402,136 @@ class FileReporter(Reporter):
             self._file.close()
             self._file = None
             print(f"[INFO] FileReporter stopped. Wrote {self._count} records.")
+
+
+# ---------------------------------------------------------------------------
+# StreamPipeline — orchestrator
+# ---------------------------------------------------------------------------
+
+class StreamPipeline:
+    """Orchestrates FrameSource → InferenceEngine → Reporter pipeline."""
+
+    def __init__(self,
+                 source_url: str,
+                 model_path: str,
+                 config_path: str,
+                 dev_id: int,
+                 interval: float = 4.0,
+                 prompt: str = "请描述画面中的内容",
+                 output_path: str = "",
+                 no_console: bool = False):
+        self.source_url = source_url
+        self.model_path = model_path
+        self.config_path = config_path
+        self.dev_id = dev_id
+        self.interval = interval
+        self.prompt = prompt
+        self.output_path = output_path
+        self.no_console = no_console
+        self._stop = False
+
+        self.source: FrameSource = CV2VideoSource()
+        self.engine: InferenceEngine = Qwen35Engine()
+        self.reporters: List[Reporter] = []
+
+    def _build_reporters(self) -> None:
+        if not self.no_console:
+            self.reporters.append(ConsoleReporter())
+        if self.output_path:
+            self.reporters.append(FileReporter(self.output_path))
+
+    def run(self) -> None:
+        signal.signal(signal.SIGINT, lambda sig, frame: setattr(self, '_stop', True))
+        signal.signal(signal.SIGTERM, lambda sig, frame: setattr(self, '_stop', True))
+
+        self._build_reporters()
+
+        if not self.source.open(self.source_url):
+            print("[ERROR] Cannot open video source. Aborting.")
+            return
+
+        self.engine.load(self.model_path, self.config_path, self.dev_id)
+        self.engine.warmup()
+
+        for r in self.reporters:
+            r.start()
+
+        print(f"[INFO] Pipeline running. Interval={self.interval}s, "
+              f"Prompt=\"{self.prompt}\"")
+        print("[INFO] Press Ctrl+C to stop.\n")
+
+        while not self._stop:
+            frame = self.source.read()
+            if frame is None:
+                if not self.source.is_live:
+                    print("[INFO] Video source exhausted. Stopping.")
+                    break
+                time.sleep(0.5)
+                continue
+
+            try:
+                result = self.engine.analyze(frame, self.prompt)
+            except Exception as exc:
+                print(f"[ERROR] Inference failed: {exc}")
+                traceback.print_exc()
+                continue
+
+            for reporter in self.reporters:
+                reporter.report(result)
+
+            wait_time = max(0, self.interval - result.ftl)
+            if wait_time > 0:
+                time.sleep(wait_time)
+
+        self.source.close()
+        for r in self.reporters:
+            r.stop()
+        print("[INFO] Pipeline finished.")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Real-time video stream analysis using Qwen3.5 35B"
+    )
+    parser.add_argument("--source", "-s", required=True,
+                        help="RTSP URL or MP4/video file path")
+    parser.add_argument("--model", "-m", required=True,
+                        help="Path to bmodel file")
+    parser.add_argument("--config", "-c", default="config/",
+                        help="Processor config directory (default: config/)")
+    parser.add_argument("--devid", "-d", type=int, default=0,
+                        help="TPU device ID (default: 0)")
+    parser.add_argument("--interval", "-i", type=float, default=4.0,
+                        help="Sampling interval in seconds (default: 4)")
+    parser.add_argument("--prompt", "-p", default="请描述画面中的内容",
+                        help="Prompt for each frame (default: 请描述画面中的内容)")
+    parser.add_argument("--output", "-o", default="",
+                        help="JSONL output path (skip file output if omitted)")
+    parser.add_argument("--no-console", action="store_true",
+                        help="Disable console output")
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.model):
+        print(f"[ERROR] Model file not found: {args.model}")
+        sys.exit(1)
+
+    pipeline = StreamPipeline(
+        source_url=args.source,
+        model_path=args.model,
+        config_path=args.config,
+        dev_id=args.devid,
+        interval=args.interval,
+        prompt=args.prompt,
+        output_path=args.output,
+        no_console=args.no_console,
+    )
+    pipeline.run()
+
+
+if __name__ == "__main__":
+    main()
