@@ -36,53 +36,76 @@ import numpy as np
 
 def extract_frames(video_path: str, output_dir: str,
                    extract_ratio: int = 5, resize_to: int = 640) -> int:
-    """Extract every Nth frame, resize, save as PNG. Returns frame count."""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"[ERROR] Cannot open video: {video_path}")
-        return 0
+    """Extract every Nth frame via ffmpeg (software decode), resize, save as PNG.
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    Uses ffmpeg for software decoding to avoid sophon VPSS hardware decoder
+    incompatibility with certain H.264 encodings.
+    Returns frame count.
+    """
+    import subprocess
+
     os.makedirs(output_dir, exist_ok=True)
 
+    # Probe video info with ffprobe
+    probe_cmd = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=nb_frames,r_frame_rate',
+        '-of', 'csv=p=0',
+        video_path,
+    ]
+    try:
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        parts = result.stdout.strip().split(',')
+        nb_frames = int(parts[0]) if parts[0] else -1
+        fps_str = parts[1] if len(parts) > 1 else ''
+        # Parse r_frame_rate (e.g., "30000/1001" or "30/1")
+        if '/' in fps_str:
+            num, den = fps_str.split('/')
+            fps = float(num) / float(den)
+        else:
+            fps = float(fps_str) if fps_str else 0.0
+    except Exception:
+        nb_frames = -1
+        fps = 0.0
+
     print(f"[Extract] Video: {video_path}")
-    print(f"[Extract] FPS: {fps:.1f}, Total frames: {total}")
+    print(f"[Extract] FPS: {fps:.2f}, Total frames (metadata): {nb_frames}")
     print(f"[Extract] Ratio: 1:{extract_ratio}, Resize: {resize_to}x{resize_to}")
-    print(f"[Extract] Estimated output: ~{total // extract_ratio} frames")
+    estimated = nb_frames // extract_ratio if nb_frames > 0 else '?'
+    print(f"[Extract] Estimated output: ~{estimated} frames")
     print(f"[Extract] Output dir: {output_dir}")
 
-    count = 0
-    saved = 0
+    # ffmpeg: software decode, select every Nth frame, resize, output PNG
+    # -vsync 0: no frame duplication/drop; select filter governs output
+    # -start_number 0: output numbering starts at 0
+    filter_str = f"select='not(mod(n,{extract_ratio}))',scale={resize_to}:{resize_to}"
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-i', video_path,
+        '-vf', filter_str,
+        '-vsync', '0',
+        '-start_number', '0',
+        '-v', 'warning',
+        '-stats',
+        os.path.join(output_dir, 'frame_%06d.png'),
+    ]
+
+    print(f"[Extract] Running: {' '.join(ffmpeg_cmd)}")
+
     t0 = time.time()
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=7200)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        count += 1
-
-        if count % extract_ratio != 0:
-            continue
-
-        # Resize
-        h, w = frame.shape[:2]
-        if w != resize_to or h != resize_to:
-            frame = cv2.resize(frame, (resize_to, resize_to),
-                              interpolation=cv2.INTER_AREA)
-
-        out_path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-        cv2.imwrite(out_path, frame)
-        saved += 1
-
-        if saved % 200 == 0:
-            elapsed = time.time() - t0
-            print(f"[Extract] {saved} frames saved ({elapsed:.1f}s)...")
-
-    cap.release()
+    # Count output frames
+    saved = len([f for f in os.listdir(output_dir) if f.endswith('.png')])
     elapsed = time.time() - t0
+
+    if result.returncode != 0:
+        print(f"[Extract] ffmpeg stderr:\n{result.stderr}")
+
     print(f"[Extract] Done: {saved} frames saved in {elapsed:.1f}s "
-          f"({saved / elapsed:.1f} fps)")
+          f"({saved / elapsed:.1f} fps)" if elapsed > 0 else
+          f"[Extract] Done: {saved} frames saved in {elapsed:.1f}s")
     return saved
 
 
