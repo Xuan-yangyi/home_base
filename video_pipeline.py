@@ -218,15 +218,17 @@ class Qwen35Engine(InferenceEngine):
             sys.path.insert(0, script_dir)
 
         import qwen3_5
+        from types import SimpleNamespace
 
-        class _Args:
-            model_path = model_path
-            config_path = config_path
-            devid = dev_id
-            video_ratio = 0.25
-            log_level = "INFO"
+        _args = SimpleNamespace(
+            model_path=model_path,
+            config_path=config_path,
+            devid=dev_id,
+            video_ratio=0.25,
+            log_level="INFO",
+        )
 
-        self._model = qwen3_5.Qwen3_5(_Args())
+        self._model = qwen3_5.Qwen3_5(_args)
         self._temp_dir = tempfile.mkdtemp(prefix="qwen35_frame_")
         print(f"[INFO] Qwen3.5 engine loaded. Temp dir: {self._temp_dir}")
 
