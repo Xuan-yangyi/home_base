@@ -46,9 +46,18 @@ def extract_frames(video_path: str, output_dir: str,
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Probe video info with ffprobe
+    # Locate sophon ffmpeg/ffprobe (system ffmpeg may not exist on EVB)
+    ffmpeg_bin = '/opt/sophon/sophon-ffmpeg-latest/bin/ffmpeg'
+    ffprobe_bin = '/opt/sophon/sophon-ffmpeg-latest/bin/ffprobe'
+    if not os.path.isfile(ffmpeg_bin):
+        ffmpeg_bin = 'ffmpeg'
+    if not os.path.isfile(ffprobe_bin):
+        ffprobe_bin = 'ffprobe'
+
+    # Probe video info with ffprobe (software decode: override sophon hw default)
     probe_cmd = [
-        'ffprobe', '-v', 'error',
+        ffprobe_bin, '-v', 'error',
+        '-c:v', 'h264',       # force software decode, not h264_bm
         '-select_streams', 'v:0',
         '-show_entries', 'stream=nb_frames,r_frame_rate',
         '-of', 'csv=p=0',
@@ -76,12 +85,14 @@ def extract_frames(video_path: str, output_dir: str,
     print(f"[Extract] Estimated output: ~{estimated} frames")
     print(f"[Extract] Output dir: {output_dir}")
 
-    # ffmpeg: software decode, select every Nth frame, resize, output PNG
+    # ffmpeg: software h264 decode (explicit -c:v h264 to skip h264_bm hw),
+    # select every Nth frame, resize, output PNG.
     # -vsync 0: no frame duplication/drop; select filter governs output
     # -start_number 0: output numbering starts at 0
     filter_str = f"select='not(mod(n,{extract_ratio}))',scale={resize_to}:{resize_to}"
     ffmpeg_cmd = [
-        'ffmpeg',
+        ffmpeg_bin,
+        '-c:v', 'h264',        # force software decode; skip h264_bm (VPSS)
         '-i', video_path,
         '-vf', filter_str,
         '-vsync', '0',
