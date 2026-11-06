@@ -180,6 +180,17 @@ class CV2VideoSource(FrameSource):
             frame_id=self._frame_count,
         )
 
+    def skip_frames(self, n: int) -> None:
+        """Discard *n* frames to advance position. Works for both RTSP and MP4."""
+        import cv2
+        if self._cap is None or n <= 0:
+            return
+        for _ in range(n):
+            ret, _ = self._cap.read()
+            if not ret:
+                break
+            self._frame_count += 1
+
     def close(self) -> None:
         if self._cap is not None:
             self._cap.release()
@@ -482,9 +493,15 @@ class StreamPipeline:
             for reporter in self.reporters:
                 reporter.report(result)
 
-            wait_time = max(0, self.interval - result.ftl)
-            if wait_time > 0:
-                time.sleep(wait_time)
+            # Skip frames to reach next sampling point
+            # (interval * fps frames ahead, minus the one we already read)
+            skip = int(self.interval * self.source.fps) - 1
+            if skip > 0 and not self.source.is_live:
+                self.source.skip_frames(skip)
+
+            elapsed = time.time() - frame.timestamp
+            if elapsed < self.interval:
+                time.sleep(self.interval - elapsed)
 
         self.source.close()
         for r in self.reporters:
